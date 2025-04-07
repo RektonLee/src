@@ -14,8 +14,8 @@ from sklearn.metrics import r2_score
 
 # 导入自定义模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models.model import ImprovedEnzymePredictionModel
-from src.data_loader import load_and_preprocess_data
+from model import ImprovedEnzymePredictionModel
+from data_loader import load_and_preprocess_data
 
 # 设置日志
 def setup_logger(name, log_file, level=logging.INFO):
@@ -75,12 +75,14 @@ def evaluate_metrics(model, data_loader, device):
         'mae_kcat': mae_kcat
     }
 
+import matplotlib.pyplot as plt
+
 def train_model(data_path=None, processed_data_path=None, epochs=100, batch_size=16, 
                 lr=0.001, weight_decay=1e-5):
     """训练模型主函数"""
     # 创建输出目录
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = f"output/training_{timestamp}"
+    timestamp = datetime.now().strftime('%m%d_%H')
+    output_dir = f"output/pdb_smile_data/training_{timestamp}"
     os.makedirs(output_dir, exist_ok=True)
     checkpoint_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -124,6 +126,12 @@ def train_model(data_path=None, processed_data_path=None, epochs=100, batch_size
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
     
+    # 记录训练过程
+    train_losses = []
+    val_losses = []
+    r2_km_scores = []
+    r2_kcat_scores = []
+    
     # 训练循环
     best_val_metrics = {'loss': float('inf')}
     early_stopping_counter = 0
@@ -151,6 +159,11 @@ def train_model(data_path=None, processed_data_path=None, epochs=100, batch_size
         scheduler.step(val_metrics['loss'])
         
         # 记录训练信息
+        train_losses.append(train_loss / len(train_loader))
+        val_losses.append(val_metrics['loss'])
+        r2_km_scores.append(val_metrics['r2_km'])
+        r2_kcat_scores.append(val_metrics['r2_kcat'])
+        
         logger.info(
             f"Epoch {epoch+1}/{epochs} - "
             f"Train Loss: {train_loss/len(train_loader):.6f}, "
@@ -177,6 +190,32 @@ def train_model(data_path=None, processed_data_path=None, epochs=100, batch_size
             logger.info(f"Early stopping triggered after {epoch+1} epochs")
             break
     
+    # 绘制训练曲线
+    plt.figure(figsize=(12, 6))
+    
+    # 绘制损失曲线
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label="Train Loss")
+    plt.plot(val_losses, label="Validation Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Training and Validation Loss")
+    plt.legend()
+    
+    # 绘制 R² 曲线
+    plt.subplot(1, 2, 2)
+    plt.plot(r2_km_scores, label="Km R²")
+    plt.plot(r2_kcat_scores, label="kcat R²")
+    plt.xlabel("Epoch")
+    plt.ylabel("R²")
+    plt.title("R² Scores")
+    plt.legend()
+    
+    # 保存图表
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "training_curves.png"))
+    plt.close()
+    
     # 训练结束，记录最终结果
     logger.info("\n最终结果:")
     logger.info(f"最佳验证损失: {best_val_metrics['loss']:.6f}")
@@ -184,7 +223,6 @@ def train_model(data_path=None, processed_data_path=None, epochs=100, batch_size
     logger.info(f"最佳kcat R²: {best_val_metrics['r2_kcat']:.4f}")
     
     return model, best_val_metrics
-
 def create_data_loaders(binding_site_features, substrate_features, y, train_indices, test_indices, batch_size=16):
     """创建PyTorch数据加载器"""
     # 分割数据
@@ -217,7 +255,7 @@ def create_data_loaders(binding_site_features, substrate_features, y, train_indi
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="训练酶动力学参数预测模型")
-    parser.add_argument("--data_path", type=str, help="原始数据路径")
+    parser.add_argument("--data_path", default="/home/lizihao/Work/enzyme_prediction/data/cleaned_data.csv",type=str, help="原始数据路径")
     parser.add_argument("--processed_data", type=str, help="预处理数据路径")
     parser.add_argument("--epochs", type=int, default=100, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=16, help="批次大小")

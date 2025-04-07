@@ -19,9 +19,34 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 from datetime import datetime
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel,EsmForProteinFolding
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+from transformers.models.esm.openfold_utils.protein import to_pdb, Protein as OFProtein
+from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
+
+def convert_outputs_to_pdb(outputs):
+    final_atom_positions = atom14_to_atom37(outputs["positions"][-1], outputs)
+    outputs = {k: v.to("cpu").numpy() for k, v in outputs.items()}
+    final_atom_positions = final_atom_positions.cpu().numpy()
+    final_atom_mask = outputs["atom37_atom_exists"]
+    pdbs = []
+    for i in range(outputs["aatype"].shape[0]):
+        aa = outputs["aatype"][i]
+        pred_pos = final_atom_positions[i]
+        mask = final_atom_mask[i]
+        resid = outputs["residue_index"][i] + 1
+        pred = OFProtein(
+            aatype=aa,
+            atom_positions=pred_pos,
+            atom_mask=mask,
+            residue_index=resid,
+            b_factors=outputs["plddt"][i],
+            chain_index=outputs["chain_index"][i] if "chain_index" in outputs else None,
+        )
+        pdbs.append(to_pdb(pred))
+    return pdbs
 
 def ensure_output_dirs():
     """确保所有输出目录存在"""
@@ -40,87 +65,136 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
+        logging.FileHandler('output/logs/data_processing.log'),
         logging.StreamHandler()
     ]
 )
 
 class ProteinStructureProcessor:
-    def __init__(self, cache_dir='output/cache/structure_cache'):
-        self.cache_dir = cache_dir
-        os.makedirs(cache_dir, exist_ok=True)
-        self.uniprot_info_cache = {}
+    def __init__(self, cache_dir='output/cache/structure_cache', pdb_save_dir='output/pdb_files'):
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         
+        # 设置默认路径为与 src 并列的 output/cache 和 output/pdb_files
+        self.cache_dir = cache_dir or os.path.join(base_dir, "output/cache/structure_cache")
+        self.pdb_save_dir = pdb_save_dir or os.path.join(base_dir, "output/pdb_files")
+        
+        os.makedirs(self.cache_dir, exist_ok=True)
+        os.makedirs(self.pdb_save_dir, exist_ok=True)
+        self.uniprot_info_cache = {}
+     # 初始化统计信息
+        self.stats = {
+            "local": 0,       # 本地加载的数量
+            "pdb_download": 0, # 从PDB官网下载的数量
+            "esm_predicted": 0, # 使用ESM预测的数量
+            "failed": 0        # 失败的数量
+        }
+
     def predict_structure(self, sequence, uniprot_id=None):
-        """使用ESMFold或从PDB获取蛋白质结构"""
-        # 检查缓存
+        """使用本地缓存、UniProt/PDB 或 ESMFold 获取蛋白质结构"""
+        # 优先检查本地是否有以 UniProt ID 命名的 PDB 文件
+        if uniprot_id:
+            pdb_path = os.path.join(self.pdb_save_dir, f"{uniprot_id}.pdb")
+            if os.path.exists(pdb_path):
+                logging.info(f"从本地加载 PDB 文件: {pdb_path}")
+                self.stats["local"] += 1  # 更新统计
+                with open(pdb_path, 'r') as f:
+                    return f.read()
+
+        # 如果没有 UniProt ID，则使用序列哈希值
         sequence_hash = hash(sequence)
         pdb_cache_path = os.path.join(self.cache_dir, f"{sequence_hash}.pdb")
-        
         if os.path.exists(pdb_cache_path):
-            logging.info(f"使用缓存的PDB结构: {pdb_cache_path}")
+            logging.info(f"使用缓存的 PDB 结构: {pdb_cache_path}")
+            self.stats["local"] += 1  # 更新统计
             with open(pdb_cache_path, 'r') as f:
-                return f.read()
-        
-        # 尝试从UniProt/PDB获取结构
+                pdb_content = f.read()
+                self._save_pdb_file(pdb_content, uniprot_id, sequence_hash)
+                return pdb_content
+
+        # 尝试从 UniProt/PDB 获取结构
         if uniprot_id and self._try_download_pdb(uniprot_id, pdb_cache_path):
             with open(pdb_cache_path, 'r') as f:
-                return f.read()
-        
-        # 如果无法获取已有结构，则使用ESMFold预测
+                pdb_content = f.read()
+                self.stats["pdb_download"] += 1  # 更新统计
+                self._save_pdb_file(pdb_content, uniprot_id, sequence_hash)
+                return pdb_content
+
+        # 如果无法获取已有结构，则使用 ESMFold 预测
         try:
-            logging.info(f"使用ESMFold预测蛋白质结构")
-            # 这里需要安装esm库: pip install "fair-esm[esmfold]"
-            import esm
-            model = esm.pretrained.esmfold_v1()
-            model.eval()
+            logging.info(f"使用 ESMFold 预测蛋白质结构")
             
+            # 使用文中加载 ESM 的方法
+            tokenizer = AutoTokenizer.from_pretrained("facebook/esmfold_v1")
+            model = EsmForProteinFolding.from_pretrained("facebook/esmfold_v1", low_cpu_mem_usage=True)
+            model = model.cuda() # 如果有GPU, 使用cuda
+            torch.backends.cuda.matmul.allow_tf32 = True
+            tokenized_input = tokenizer([sequence], return_tensors="pt", add_special_tokens=False)['input_ids']
+            tokenized_input = tokenized_input.cuda() # 如果有GPU, 使用cuda
             with torch.no_grad():
-                output = model.infer_pdb(sequence)
-                
+                output = model(tokenized_input)
+
+            pdb_content = convert_outputs_to_pdb(output)[0] # 提取pdb内容
                 # 保存到缓存
-                with open(pdb_cache_path, 'w') as f:
-                    f.write(output)
-                
-                return output
+            
+          
+            # 保存到指定目录
+            self.stats["esm_predicted"] += 1  # 更新统计
+            self._save_pdb_file(pdb_content, uniprot_id, sequence_hash)
+            return pdb_content
         except Exception as e:
-            logging.error(f"ESMFold预测失败: {e}")
-            # 如果ESMFold预测失败，创建一个简单的PDB文件
-            return self._create_dummy_pdb(sequence)
-    
+            logging.error(f"ESMFold 预测失败: {e}")
+            # 如果 ESMFold 预测失败，创建一个简单的 PDB 文件
+            pdb_content = self._create_dummy_pdb(sequence)
+            self._save_pdb_file(pdb_content, uniprot_id, sequence_hash)
+            self.stats["failed"] += 1  # 更新统计
+            return pdb_content
+        
+
+    def _save_pdb_file(self, pdb_content, uniprot_id, sequence_hash):
+        """保存 PDB 文件到指定目录"""
+        if uniprot_id:
+            pdb_filename = f"{uniprot_id}.pdb"
+        else:
+            pdb_filename = f"sequence_{sequence_hash}.pdb"
+
+        pdb_path = os.path.join(self.pdb_save_dir, pdb_filename)
+        with open(pdb_path, 'w') as f:
+            f.write(pdb_content)
+        logging.info(f"PDB 文件已保存: {pdb_path}")
+
     def _try_download_pdb(self, uniprot_id, output_path):
-        """尝试从UniProt和PDB下载结构"""
+        """尝试从 UniProt 和 PDB 下载结构"""
         try:
-            # 获取UniProt信息
+            # 获取 UniProt 信息
             if uniprot_id not in self.uniprot_info_cache:
                 uniprot_url = f"https://www.uniprot.org/uniprot/{uniprot_id}.xml"
                 response = requests.get(uniprot_url)
                 if response.status_code != 200:
                     return False
                 self.uniprot_info_cache[uniprot_id] = response.text
-            
-            # 从UniProt信息中提取PDB ID
+
+            # 从 UniProt 信息中提取 PDB ID
             import re
             pdb_ids = re.findall(r'<dbReference type="PDB" id="([^"]+)"', self.uniprot_info_cache[uniprot_id])
-            
+
             if not pdb_ids:
                 return False
-            
-            # 下载第一个PDB文件
+
+            # 下载第一个 PDB 文件
             pdb_id = pdb_ids[0]
             pdb_url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
             response = requests.get(pdb_url)
-            
+
             if response.status_code == 200:
                 with open(output_path, 'w') as f:
                     f.write(response.text)
-                logging.info(f"从PDB下载结构成功: {pdb_id}")
+                logging.info(f"从 PDB 下载结构成功: {pdb_id}")
                 return True
-            
+
             return False
         except Exception as e:
-            logging.error(f"从PDB下载结构失败: {e}")
+            logging.error(f"从 PDB 下载结构失败: {e}")
             return False
-    
     def _create_dummy_pdb(self, sequence):
         """为序列创建一个简单的线性PDB结构"""
         pdb_lines = []
@@ -246,8 +320,9 @@ class ProteinStructureProcessor:
     def _detect_pockets_with_fpocket(self, pdb_path):
         """使用fpocket检测蛋白质口袋"""
         # 运行fpocket
+        fpocket_path = "/home/lizihao/Work/enzyme_prediction/fpocket" 
         output_dir = pdb_path.replace('.pdb', '_out')
-        cmd = ['fpocket', '-f', pdb_path]
+        cmd = ["fpocket", '-f', pdb_path]
         
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -360,6 +435,26 @@ class ProteinStructureProcessor:
         return np.mean(all_coords, axis=0) if all_coords else np.array([0, 0, 0])
                 
     def extract_binding_site(self, pdb_str, uniprot_id=None, sequence=None, radius=10.0):
+        """Extracts atomic coordinates around the binding site from a PDB structure.
+        This function processes a PDB structure to identify and extract atomic coordinates
+        within a specified radius of the binding site center.
+        Args:
+            pdb_str (str): PDB structure contents as a string.
+            uniprot_id (str, optional): UniProt ID of the protein. Defaults to None.
+            sequence (str, optional): Amino acid sequence of the protein. Defaults to None.
+            radius (float, optional): Radius in Angstroms around binding site to extract atoms. 
+                Defaults to 10.0.
+        Returns:
+            tuple: A tuple containing:
+                - numpy.ndarray: 3D coordinates of the binding site center
+                - list: List of dictionaries containing atom information, where each dict has:
+                    - type (int): Atomic element type (0-6 mapping)
+                    - coords (numpy.ndarray): 3D coordinates of the atom
+                    - residue (str): Residue name
+                    - distance (float): Distance from binding site center
+        Raises:
+            Structure related exceptions from Bio.PDB
+        """
         """从PDB结构中提取活性位点周围的原子坐标"""
         # 解析PDB结构
         with tempfile.NamedTemporaryFile('w', suffix='.pdb', delete=False) as tmp:
@@ -938,4 +1033,3 @@ if __name__ == "__main__":
     print(f"活性位点特征形状: {binding_site_features.shape}")
     print(f"底物嵌入形状: {substrate_embeddings.shape}")
     print(f"训练集大小: {len(train_indices)}, 测试集大小: {len(test_indices)}")
-       

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 # Define the SubstrateAttention class that was referenced but not implemented
-ddd
+
 
 class BindingSiteEncoder(nn.Module):
     def __init__(self, input_channels=7, output_dim=256):

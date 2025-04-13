@@ -51,7 +51,7 @@ def view_npz_content(npz_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="查看NPZ文件内容")
-    parser.add_argument('npz_path', type=str, help='NPZ文件路径')
+    parser.add_argument('npz_path', default="output/processed/processed_data_0406_21.npz", type=str, help='NPZ文件路径')
     args = parser.parse_args()
     
     view_npz_content(args.npz_path)

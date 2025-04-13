@@ -1,5 +1,6 @@
 # src/data_loader.py
 import os
+from torch_geometric.loader import DataLoader as GeometricDataLoader
 import numpy as np
 import pandas as pd
 import torch
@@ -22,7 +23,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel,EsmForProteinFolding
 import matplotlib.pyplot as plt
 import seaborn as sns
-
+from torch_geometric.data import Data
 from transformers.models.esm.openfold_utils.protein import to_pdb, Protein as OFProtein
 from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
 
@@ -195,6 +196,7 @@ class ProteinStructureProcessor:
         except Exception as e:
             logging.error(f"从 PDB 下载结构失败: {e}")
             return False
+   
     def _create_dummy_pdb(self, sequence):
         """为序列创建一个简单的线性PDB结构"""
         pdb_lines = []
@@ -456,7 +458,7 @@ class ProteinStructureProcessor:
             Structure related exceptions from Bio.PDB
         """
         """从PDB结构中提取活性位点周围的原子坐标"""
-        # 解析PDB结构
+        # DB结构中提取活性位点周围的原子坐标，并构建图数据"""
         with tempfile.NamedTemporaryFile('w', suffix='.pdb', delete=False) as tmp:
             tmp.write(pdb_str)
             tmp_pdb_path = tmp.name
@@ -466,36 +468,67 @@ class ProteinStructureProcessor:
             structure = parser.get_structure('protein', tmp_pdb_path)
             model = structure[0]
             
-            # 识别活性位点
+            # 识别活性位点中心
             binding_site_center = self.identify_binding_site(pdb_str, uniprot_id, sequence)
             
             # 提取周围原子
             atoms = []
-            atom_types = {'C': 0, 'N': 1, 'O': 2, 'S': 3, 'P': 4, 'H': 5}  # 原子类型映射
-            
+            atom_types = {'C': 0, 'N': 1, 'O': 2, 'S': 3, 'P': 4, 'H': 5}
+            residue_types = {aa: i for i, aa in enumerate("ACDEFGHIKLMNPQRSTVWY")}
+
             for residue in Selection.unfold_entities(model, 'R'):
                 if residue.get_id()[0] != ' ':  # 跳过非标准残基
                     continue
-                
                 for atom in residue:
                     atom_coord = atom.get_coord()
                     dist = np.linalg.norm(atom_coord - binding_site_center)
-                    
                     if dist <= radius:
-                        atom_element = atom.element.strip()
-                        if not atom_element:
-                            atom_element = atom.name[0]
-                        
-                        atom_type = atom_types.get(atom_element, 6)  # 默认为"其他"类型
-                        
+                        atom_element = atom.element.strip() or atom.name[0]
+                        atom_type = atom_types.get(atom_element, 6)
                         atoms.append({
                             'type': atom_type,
                             'coords': atom_coord,
                             'residue': residue.get_resname(),
                             'distance': dist
                         })
-            
-            return binding_site_center, atoms
+
+            # 构建图
+            node_features = []
+            edge_index = []
+            edge_attr = []
+
+            for i, atom in enumerate(atoms):
+                atom_type_one_hot = np.zeros(6)
+                atom_type_one_hot[atom['type']] = 1
+                residue_one_hot = np.zeros(20)
+                residue_one_hot[residue_types.get(atom['residue'][0], 19)] = 1  # 默认用 Y 表示未知
+                feature = np.concatenate([
+                    atom_type_one_hot,        # 6 维
+                    atom['coords'],           # 3 维
+                    [atom['distance']],       # 1 维
+                    residue_one_hot           # 20 维
+                ])
+                node_features.append(feature)
+
+            # 计算边（距离阈值 5Å）
+            coords = np.array([atom['coords'] for atom in atoms])
+            for i in range(len(atoms)):
+                for j in range(i + 1, len(atoms)):
+                    dist = np.linalg.norm(coords[i] - coords[j])
+                    if dist < 5.0:  # 阈值
+                        edge_index.append([i, j])
+                        edge_index.append([j, i])  # 无向图
+                        edge_attr.append([dist])
+
+            # 转换为张量
+            x = torch.tensor(np.array(node_features), dtype=torch.float)
+            edge_index = torch.tensor(np.array(edge_index).T, dtype=torch.long)
+            edge_attr = torch.tensor(np.array(edge_attr), dtype=torch.float)
+
+            # 图数据对象
+            graph_data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, 
+                            center=torch.tensor(binding_site_center, dtype=torch.float))
+            return binding_site_center, graph_data
         
         finally:
             if os.path.exists(tmp_pdb_path):
@@ -572,34 +605,22 @@ class MoleculeEmbeddingGenerator:
         
         return np.zeros(768)
 
-def create_data_loaders(binding_site_features, substrate_features, y, train_indices, test_indices, batch_size=16):
-    """创建PyTorch数据加载器"""
-    # 分割数据
-    x_train_binding = binding_site_features[train_indices]
-    x_train_substrate = substrate_features[train_indices]
-    y_train = y[train_indices]
-    
-    x_test_binding = binding_site_features[test_indices]
-    x_test_substrate = substrate_features[test_indices]
-    y_test = y[test_indices]
-    
-    # 转换为PyTorch张量
-    x_train_binding = torch.tensor(x_train_binding, dtype=torch.float32)
-    x_train_substrate = torch.tensor(x_train_substrate, dtype=torch.float32)
-    y_train = torch.tensor(y_train, dtype=torch.float32)
-    
-    x_test_binding = torch.tensor(x_test_binding, dtype=torch.float32)
-    x_test_substrate = torch.tensor(x_test_substrate, dtype=torch.float32)
-    y_test = torch.tensor(y_test, dtype=torch.float32)
-    
+def create_data_loaders(binding_site_graphs, substrate_features, y, train_indices, test_indices, batch_size=16):
+    """创建支持图数据的PyTorch数据加载器"""
+    train_graphs = [binding_site_graphs[i] for i in train_indices]
+    test_graphs = [binding_site_graphs[i] for i in test_indices]
+    x_train_substrate = torch.tensor(substrate_features[train_indices], dtype=torch.float32)
+    x_test_substrate = torch.tensor(substrate_features[test_indices], dtype=torch.float32)
+    y_train = torch.tensor(y[train_indices], dtype=torch.float32)
+    y_test = torch.tensor(y[test_indices], dtype=torch.float32)
+
     # 创建数据集
-    train_dataset = TensorDataset(x_train_binding, x_train_substrate, y_train)
-    test_dataset = TensorDataset(x_test_binding, x_test_substrate, y_test)
-    
+    train_dataset = list(zip(train_graphs, x_train_substrate, y_train))
+    test_dataset = list(zip(test_graphs, x_test_substrate, y_test))
+
     # 创建数据加载器
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    
+    train_loader = GeometricDataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = GeometricDataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     return train_loader, test_loader
 
 def load_and_preprocess_data(data_path, timestamp=None, save_processed=True, save_visualization=True):
@@ -668,8 +689,8 @@ def load_and_preprocess_data(data_path, timestamp=None, save_processed=True, sav
             logger.error(f"初始化分子嵌入生成器失败: {e}")
             raise RuntimeError(f"初始化分子嵌入生成器失败: {e}")
         
-        # 处理蛋白质结构和活性位点
-        binding_site_features = []
+       # 处理蛋白质结构和活性位点
+        binding_site_graphs = []  # 改为存储图数据
         protein_sequences = []
         
         for i, row in tqdm(df.iterrows(), total=len(df), desc="处理蛋白质结构"):
@@ -682,33 +703,17 @@ def load_and_preprocess_data(data_path, timestamp=None, save_processed=True, sav
                 # 预测结构
                 pdb_str = structure_processor.predict_structure(seq, uniprot_id)
                 
-                # 提取活性位点特征
-                binding_center, binding_atoms = structure_processor.extract_binding_site(
-                    pdb_str, uniprot_id, seq)
-                
-                # 处理原子特征
-                if binding_atoms:
-                    # 将原子特征转换为固定大小的特征向量
-                    atom_features = np.zeros((100, 7))  # 最多100个原子，每个原子7个特征
-                    
-                    for j, atom in enumerate(binding_atoms[:100]):
-                        atom_features[j, 0] = atom['type']  # 原子类型
-                        atom_features[j, 1:4] = atom['coords']  # 坐标
-                        atom_features[j, 4] = atom['distance']  # 到中心的距离
-                    
-                    binding_site_features.append(atom_features)
-                    protein_sequences.append(seq)
-                else:
-                    logger.warning(f"蛋白质 {i+1} 未找到活性位点原子，使用零向量")
-                    # 使用零向量
-                    binding_site_features.append(np.zeros((100, 7)))
-                    protein_sequences.append(seq)
+                # 提取活性位点特征（返回图数据）
+                binding_center, binding_graph = structure_processor.extract_binding_site(pdb_str, uniprot_id, seq)
+                binding_site_graphs.append(binding_graph)
+                protein_sequences.append(seq)
             except Exception as e:
                 logger.error(f"处理蛋白质 {i+1} 时出错: {e}")
-                # 使用零向量作为后备
-                binding_site_features.append(np.zeros((100, 7)))
+                # 使用空图作为后备
+                dummy_graph = Data(x=torch.zeros(1, 30), edge_index=torch.tensor([[0], [0]], dtype=torch.long))
+                binding_site_graphs.append(dummy_graph)
                 protein_sequences.append(row["protein_sequence"])
-        
+            
         # 处理底物分子，只使用第一个底物
         substrate_embeddings = []
         substrate_smiles = []
@@ -746,19 +751,17 @@ def load_and_preprocess_data(data_path, timestamp=None, save_processed=True, sav
         logger.info(f"特征形状 - 活性位点: {binding_site_features.shape}, 底物: {substrate_embeddings.shape}")
         
         # 创建数据加载器
+        # 创建数据加载器
         train_loader, test_loader = create_data_loaders(
-            binding_site_features, substrate_embeddings, y, train_indices, test_indices)
-        
-        # 保存预处理数据
+            binding_site_graphs, substrate_embeddings, y, train_indices, test_indices)
+
+    # 保存预处理数据（调整保存格式）
         if save_processed:
-            # 确保processed目录存在
-            os.makedirs("output/processed", exist_ok=True)
             output_path = f"output/processed/processed_data_{timestamp}.npz"
             np.savez(
-                output_path, 
-                binding_site_features=binding_site_features,
+                output_path,
                 substrate_embeddings=substrate_embeddings,
-                y=y, 
+                y=y,
                 train_indices=train_indices,
                 test_indices=test_indices,
                 metadata={
@@ -766,7 +769,9 @@ def load_and_preprocess_data(data_path, timestamp=None, save_processed=True, sav
                     'substrate_smiles': substrate_smiles
                 }
             )
-            logger.info(f"预处理数据保存至: {output_path}")
+            # 图数据单独保存（因为 npz 不支持复杂对象）
+            torch.save(binding_site_graphs, f"output/processed/graphs_{timestamp}.pt")
+            logger.info(f"预处理数据保存至: {output_path} 和 graphs_{timestamp}.pt")
         
         # 保存可视化结果
         if save_visualization:

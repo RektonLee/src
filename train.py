@@ -11,7 +11,7 @@ import sys
 import time
 from datetime import datetime
 from sklearn.metrics import r2_score
-
+from torch_geometric.loader import DataLoader as GeometricDataLoader
 # 导入自定义模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model import ImprovedEnzymePredictionModel
@@ -96,29 +96,29 @@ def train_model(data_path=None, processed_data_path=None, epochs=100, batch_size
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logger.info(f"使用设备: {device}")
     
-    # 加载数据
+   # 加载数据
     if processed_data_path and os.path.exists(processed_data_path):
         logger.info(f"从预处理数据加载: {processed_data_path}")
         data = np.load(processed_data_path)
-        binding_site_features = data['binding_site_features']
         substrate_embeddings = data['substrate_embeddings']
         y = data['y']
         train_indices = data['train_indices']
         test_indices = data['test_indices']
+        binding_site_graphs = torch.load(processed_data_path.replace('.npz', '.pt'))
         
         train_loader, test_loader = create_data_loaders(
-            binding_site_features, substrate_embeddings, y, 
+            binding_site_graphs, substrate_embeddings, y, 
             train_indices, test_indices, batch_size=batch_size
         )
     else:
         logger.info(f"从原始数据加载并预处理: {data_path}")
-        train_loader, test_loader, binding_site_features, substrate_embeddings, y, train_indices, test_indices = load_and_preprocess_data(
+        train_loader, test_loader, binding_site_graphs, substrate_embeddings, y, train_indices, test_indices = load_and_preprocess_data(
             data_path, timestamp=timestamp
         )
     
     # 初始化模型
     model = ImprovedEnzymePredictionModel(
-        binding_site_dim=binding_site_features.shape[2],
+        node_feature_dim=30,  # 与 extract_binding_site 的特征维度匹配
         substrate_dim=substrate_embeddings.shape[1],
     ).to(device)
     
@@ -141,8 +141,9 @@ def train_model(data_path=None, processed_data_path=None, epochs=100, batch_size
         # 训练阶段
         model.train()
         train_loss = 0
-        for binding_site, substrate, targets in train_loader:
-            binding_site = binding_site.to(device)
+        for batch in train_loader:
+            binding_site, substrate, targets = batch  # batch 是 (Data, tensor, tensor)
+            binding_site = binding_site.to(device)  # 图数据自动处理
             substrate = substrate.to(device)
             targets = targets.to(device)
             
@@ -223,36 +224,28 @@ def train_model(data_path=None, processed_data_path=None, epochs=100, batch_size
     logger.info(f"最佳kcat R²: {best_val_metrics['r2_kcat']:.4f}")
     
     return model, best_val_metrics
-def create_data_loaders(binding_site_features, substrate_features, y, train_indices, test_indices, batch_size=16):
-    """创建PyTorch数据加载器"""
-    # 分割数据
-    x_train_binding = binding_site_features[train_indices]
-    x_train_substrate = substrate_features[train_indices]
-    y_train = y[train_indices]
+
+
+def create_data_loaders(binding_site_graphs, substrate_features, y, train_indices, test_indices, batch_size=16):
+    # 分割训练和测试数据
+    train_graphs = [binding_site_graphs[i] for i in train_indices]
+    test_graphs = [binding_site_graphs[i] for i in test_indices]
     
-    x_test_binding = binding_site_features[test_indices]
-    x_test_substrate = substrate_features[test_indices]
-    y_test = y[test_indices]
-    
-    # 转换为PyTorch张量
-    x_train_binding = torch.tensor(x_train_binding, dtype=torch.float32)
-    x_train_substrate = torch.tensor(x_train_substrate, dtype=torch.float32)
-    y_train = torch.tensor(y_train, dtype=torch.float32)
-    
-    x_test_binding = torch.tensor(x_test_binding, dtype=torch.float32)
-    x_test_substrate = torch.tensor(x_test_substrate, dtype=torch.float32)
-    y_test = torch.tensor(y_test, dtype=torch.float32)
+    x_train_substrate = torch.tensor(substrate_features[train_indices], dtype=torch.float32)
+    x_test_substrate = torch.tensor(substrate_features[test_indices], dtype=torch.float32)
+    y_train = torch.tensor(y[train_indices], dtype=torch.float32)
+    y_test = torch.tensor(y[test_indices], dtype=torch.float32)
     
     # 创建数据集
-    train_dataset = TensorDataset(x_train_binding, x_train_substrate, y_train)
-    test_dataset = TensorDataset(x_test_binding, x_test_substrate, y_test)
+    train_dataset = list(zip(train_graphs, x_train_substrate, y_train))
+    test_dataset = list(zip(test_graphs, x_test_substrate, y_test))
     
     # 创建数据加载器
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = GeometricDataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = GeometricDataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     return train_loader, test_loader
-
+    # return train_loader, test_loader
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="训练酶动力学参数预测模型")
     parser.add_argument("--data_path", default="/home/lizihao/Work/enzyme_prediction/data/cleaned_data.csv",type=str, help="原始数据路径")

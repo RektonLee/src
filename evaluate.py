@@ -70,20 +70,27 @@ def evaluate_model(model, test_data, device='cuda:1'):
             
             # 计算评估指标 (log10尺度)
             metrics = {
-                'mse_km': mean_squared_error(y_test[:, 0], predictions[:, 0]),
-                'mse_kcat': mean_squared_error(y_test[:, 1], predictions[:, 1]),
-                'r2_km': r2_score(y_test[:, 0], predictions[:, 0]),
-                'r2_kcat': r2_score(y_test[:, 1], predictions[:, 1]),
-                'pearson_km': pearsonr(y_test[:, 0], predictions[:, 0])[0],
-                'pearson_kcat': pearsonr(y_test[:, 1], predictions[:, 1])[0]
+                'mse_km_log': mean_squared_error(y_test[:, 0], predictions[:, 0]),
+                'mse_kcat_log': mean_squared_error(y_test[:, 1], predictions[:, 1]),
+                'r2_km_log': r2_score(y_test[:, 0], predictions[:, 0]),
+                'r2_kcat_log': r2_score(y_test[:, 1], predictions[:, 1]),
+                'pearson_km_log': pearsonr(y_test[:, 0], predictions[:, 0])[0],
+                'pearson_kcat_log': pearsonr(y_test[:, 1], predictions[:, 1])[0]
             }
             
-            # 计算原始尺度的相对误差
+            # 计算原始尺度的指标
             km_true = np.power(10, y_test[:, 0])
             kcat_true = np.power(10, y_test[:, 1])
             km_pred = np.power(10, predictions[:, 0])
             kcat_pred = np.power(10, predictions[:, 1])
             
+            # 计算原始尺度的R²
+            metrics.update({
+                'r2_km': r2_score(km_true, km_pred),
+                'r2_kcat': r2_score(kcat_true, kcat_pred)
+            })
+            
+            # 计算相对误差
             rel_error_km = np.abs(km_true - km_pred) / km_true * 100
             rel_error_kcat = np.abs(kcat_true - kcat_pred) / kcat_true * 100
             
@@ -160,6 +167,60 @@ def plot_scatter_predictions(y_true, predictions, save_path='output/evaluation')
         raise
 
 
+# def plot_error_distribution(y_true, predictions, save_path='output/evaluation'):
+#     """绘制预测误差分布图"""
+#     try:
+#         os.makedirs(save_path, exist_ok=True)
+        
+#         # 计算相对误差
+#         km_true = 10**y_true[:, 0]
+#         kcat_true = 10**y_true[:, 1]
+#         km_pred = 10**predictions[:, 0]
+#         kcat_pred = 10**predictions[:, 1]
+        
+#         rel_error_km = np.abs(km_true - km_pred) / km_true * 100
+#         rel_error_kcat = np.abs(kcat_true - kcat_pred) / kcat_true * 100
+        
+#         # 将误差限制在0-100%范围内
+#         rel_error_km = np.clip(rel_error_km, 0, 100)
+#         rel_error_kcat = np.clip(rel_error_kcat, 0, 100)
+        
+#         # 创建图像
+#         plt.figure(figsize=(12, 5))
+        
+#         # Km误差分布
+#         plt.subplot(1, 2, 1)
+#         sns.histplot(rel_error_km, bins=30)
+#         plt.xlabel('Km Relative Error (%)')
+#         plt.ylabel('Frequency')
+#         plt.title(f'Km Prediction Error Distribution\nMedian Error: {np.median(rel_error_km):.2f}%')
+#         plt.xlim(0, 100)
+        
+#         # kcat误差分布
+#         plt.subplot(1, 2, 2)
+#         sns.histplot(rel_error_kcat, bins=30)
+#         plt.xlabel('kcat Relative Error (%)')
+#         plt.ylabel('Frequency')
+#         plt.title(f'kcat Prediction Error Distribution\nMedian Error: {np.median(rel_error_kcat):.2f}%')
+#         plt.xlim(0, 100)
+        
+#         plt.tight_layout()
+        
+#         # 保存图片
+#         timestamp = time.strftime("%Y%m%d_%H%M%S")
+#         save_name = os.path.join(save_path, f'error_distribution_{timestamp}.png')
+#         plt.savefig(save_name, dpi=300, bbox_inches='tight')
+#         logging.info(f"误差分布图已保存至: {save_name}")
+        
+#         plt.close()
+#     except Exception as e:
+#         logging.error(f"绘制误差分布图时出错: {str(e)}")
+#         raise
+
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 def plot_error_distribution(y_true, predictions, save_path='output/evaluation'):
     """绘制预测误差分布图"""
     try:
@@ -174,28 +235,33 @@ def plot_error_distribution(y_true, predictions, save_path='output/evaluation'):
         rel_error_km = np.abs(km_true - km_pred) / km_true * 100
         rel_error_kcat = np.abs(kcat_true - kcat_pred) / kcat_true * 100
         
-        # 将误差限制在0-100%范围内
-        rel_error_km = np.clip(rel_error_km, 0, 100)
-        rel_error_kcat = np.clip(rel_error_kcat, 0, 100)
+        # 定义误差区间
+        bin_edges = [0, 50, 100, 150, 200, 250, 300, 500, 1000, float('inf')]  # 自定义区间
+        bin_labels = ['0-50%', '50-100%', '100-150%', '150-200%', '200-250%', 
+                      '250-300%', '300-500%', '500-1000%', '>1000%']
+        
+        # 计算 Km 误差的频率
+        km_hist, _ = np.histogram(rel_error_km, bins=bin_edges)
         
         # 创建图像
         plt.figure(figsize=(12, 5))
         
-        # Km误差分布
+        # Km 误差分布
         plt.subplot(1, 2, 1)
-        sns.histplot(rel_error_km, bins=30)
+        plt.bar(range(len(km_hist)), km_hist, tick_label=bin_labels, align='center')
         plt.xlabel('Km Relative Error (%)')
         plt.ylabel('Frequency')
         plt.title(f'Km Prediction Error Distribution\nMedian Error: {np.median(rel_error_km):.2f}%')
-        plt.xlim(0, 100)
+        plt.xticks(rotation=45, ha='right')  # 旋转标签以便阅读
         
-        # kcat误差分布
+        # kcat 误差分布（保持原样或类似修改）
         plt.subplot(1, 2, 2)
-        sns.histplot(rel_error_kcat, bins=30)
+        kcat_hist, _ = np.histogram(rel_error_kcat, bins=bin_edges)
+        plt.bar(range(len(kcat_hist)), kcat_hist, tick_label=bin_labels, align='center')
         plt.xlabel('kcat Relative Error (%)')
         plt.ylabel('Frequency')
         plt.title(f'kcat Prediction Error Distribution\nMedian Error: {np.median(rel_error_kcat):.2f}%')
-        plt.xlim(0, 100)
+        plt.xticks(rotation=45, ha='right')
         
         plt.tight_layout()
         
@@ -209,7 +275,6 @@ def plot_error_distribution(y_true, predictions, save_path='output/evaluation'):
     except Exception as e:
         logging.error(f"绘制误差分布图时出错: {str(e)}")
         raise
-
 if __name__ == '__main__':
     try:
         parser = argparse.ArgumentParser(description="评估酶动力学预测模型")
@@ -219,7 +284,7 @@ if __name__ == '__main__':
                            help='NPZ数据文件路径')
         parser.add_argument('--device', type=str, default='cuda:1',
                            help='使用的设备')
-        parser.add_argument('--output_dir', type=str, default='output/evaluation',
+        parser.add_argument('--output_dir', type=str, default='output/evaluation/mid_raw/3',
                            help='输出目录')
         args = parser.parse_args()
 
@@ -279,10 +344,12 @@ if __name__ == '__main__':
         show_prediction_examples(test_data['y'], predictions, n_examples=6)
         
         # 输出评估结果
+           # 输出评估结果
         logging.info("\n评估结果:")
-        logging.info(f"MSE - Km: {metrics['mse_km']:.6f}, kcat: {metrics['mse_kcat']:.6f}")
-        logging.info(f"R² - Km: {metrics['r2_km']:.4f}, kcat: {metrics['r2_kcat']:.4f}")
-        logging.info(f"Pearson r - Km: {metrics['pearson_km']:.4f}, kcat: {metrics['pearson_kcat']:.4f}")
+        logging.info(f"MSE - Km: {metrics['mse_km_log']:.6f}, kcat: {metrics['mse_kcat_log']:.6f}")
+        logging.info(f"R² (log尺度) - Km: {metrics['r2_km_log']:.4f}, kcat: {metrics['r2_kcat_log']:.4f}")
+        logging.info(f"R² (原始尺度) - Km: {metrics['r2_km']:.4f}, kcat: {metrics['r2_kcat']:.4f}")
+        logging.info(f"Pearson r - Km: {metrics['pearson_km_log']:.4f}, kcat: {metrics['pearson_kcat_log']:.4f}")
         logging.info(f"相对误差中位数 - Km: {metrics['median_rel_error_km']:.2f}%, "
                     f"kcat: {metrics['median_rel_error_kcat']:.2f}%")
                     

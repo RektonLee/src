@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 # Define the SubstrateAttention class that was referenced but not implemented
-
+from torch_geometric.nn import GCNConv, global_mean_pool
 
 class BindingSiteEncoder(nn.Module):
     def __init__(self, input_channels=7, output_dim=256):
@@ -58,47 +58,37 @@ class SubstrateEncoder(nn.Module):
     def forward(self, substrate_features):
         return self.encoder(substrate_features)
 
-
-
 class ImprovedEnzymePredictionModel(nn.Module):
-    def __init__(self, binding_site_dim=7, substrate_dim=384):
+    def __init__(self, node_feature_dim=30, substrate_dim=768, hidden_dim=128):
         super().__init__()
-        
-        # 使用BindingSiteEncoder处理活性位点特征
-        self.binding_site_encoder = BindingSiteEncoder(
-            input_channels=binding_site_dim,
-            output_dim=256
-        )
-        
-        # 处理底物特征
-        self.substrate_encoder = SubstrateEncoder(
-            input_dim=substrate_dim,
-            output_dim=256
-        )
-        
-        # 预测头
-        self.predictor = nn.Sequential(
-            nn.Linear(512, 256),  # 256(binding_site) + 256(substrate) = 512
-            nn.ReLU(),
-            nn.Dropout(0.4),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 2)  # 预测Km和kcat
-        )
-        
-        # 损失函数
+        self.conv1 = GCNConv(node_feature_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.substrate_fc = nn.Linear(substrate_dim, hidden_dim)
+        self.fusion_fc = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.output_fc = nn.Linear(hidden_dim, 2)  # 输出 Km 和 kcat
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.3)
         self.criterion = nn.MSELoss()
-    
-    def forward(self, binding_site_features, substrate_features):
-        # 编码活性位点特征
-        binding_site_encoded = self.binding_site_encoder(binding_site_features)  # [batch, 256]
-        
-        # 编码底物特征
-        substrate_encoded = self.substrate_encoder(substrate_features)  # [batch, 256]
-        
-        # 特征融合
-        combined = torch.cat([binding_site_encoded, substrate_encoded], dim=1)
-        
-        # 预测
-        output = self.predictor(combined)
+
+    def forward(self, binding_site, substrate):
+        # binding_site 是 Data 对象，包含 x, edge_index, edge_attr, batch
+        x, edge_index, edge_attr, batch = binding_site.x, binding_site.edge_index, binding_site.edge_attr, binding_site.batch
+
+        # GNN 处理口袋图
+        x = self.relu(self.conv1(x, edge_index))
+        x = self.dropout(x)
+        x = self.conv2(x, edge_index)
+        pocket_embedding = global_mean_pool(x, batch)  # 池化成固定维度
+
+        # 处理底物嵌入
+        substrate_emb = self.relu(self.substrate_fc(substrate))
+        substrate_emb = self.dropout(substrate_emb)
+
+        # 融合
+        fused = torch.cat([pocket_embedding, substrate_emb], dim=-1)
+        fused = self.relu(self.fusion_fc(fused))
+        fused = self.dropout(fused)
+
+        # 输出
+        output = self.output_fc(fused)
         return output

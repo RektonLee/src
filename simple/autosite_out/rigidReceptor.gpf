@@ -1,0 +1,16 @@
+outlev 1
+parameter_file AD4.1_bound.dat
+npts 74 61 110
+gridfld rigidReceptor.maps.fld # avs field file
+spacing 1.000000
+receptor_types A C H HD N OA SA 
+ligand_types C OA HD 
+receptor rigidReceptor.pdbqt
+gridcenter 6.563 14.787 44.880
+smooth 0.500000
+map rigidReceptor.C.map
+map rigidReceptor.OA.map
+map rigidReceptor.HD.map
+elecmap rigidReceptor.e.map
+dsolvmap rigidReceptor.d.map
+dielectric -0.145600

@@ -253,6 +253,7 @@ class ProteinStructureProcessor:
                 logging.warning(f"fpocket检测失败: {e}")
             
             # 方法3: 使用保守性和结构特征分析
+            logging.info(f"保守口袋")
             return self._analyze_structure_features(tmp_pdb_path, sequence)
             
         finally:
@@ -790,6 +791,80 @@ def load_and_preprocess_data(data_path, timestamp=None, save_processed=True, sav
     finally:
         logger.handlers.remove(file_handler)
 
+
+def load_from_local_structures_and_npz(csv_path, npz_path, pdb_dir, save=True, timestamp=None):
+
+
+    if timestamp is None:
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    df = pd.read_csv(csv_path)
+    npz_data = np.load(npz_path)
+
+    logger = logging.getLogger("local_loader")
+    logger.setLevel(logging.INFO)
+
+    structure_processor = ProteinStructureProcessor(pdb_save_dir=pdb_dir)
+
+    binding_site_graphs = []
+    protein_sequences = []
+    substrate_embeddings = []
+    substrate_smiles = []
+    valid_indices = []
+
+    for i, row in tqdm(df.iterrows(), total=len(df), desc="处理本地PDB结构"):
+        uniprot_id = row.get("uniprot", None)
+        seq = row["protein_sequence"]
+        pdb_path = os.path.join(pdb_dir, f"{uniprot_id}.pdb")
+
+        if not os.path.exists(pdb_path):
+            logger.warning(f"跳过蛋白质 {i}: {uniprot_id}，本地结构不存在")
+            continue
+
+        try:
+            with open(pdb_path, "r") as f:
+                pdb_str = f.read()
+            center, graph = structure_processor.extract_binding_site(pdb_str, uniprot_id, seq)
+
+            binding_site_graphs.append(graph)
+            protein_sequences.append(seq)
+            substrate_embeddings.append(npz_data["substrate_embeddings"][i])
+            # substrate_smiles.append(get_first_smiles(row["substrate_smiles"]))
+            valid_indices.append(i)
+        except Exception as e:
+            logger.warning(f"跳过蛋白质 {i}，处理失败: {e}")
+            continue
+
+    # 标签取log
+    y = np.column_stack([
+        np.log10(df.loc[valid_indices, "Km Wildtype"]),
+        np.log10(df.loc[valid_indices, "kcat Wildtype"])
+    ])
+    substrate_embeddings = np.array(substrate_embeddings)
+
+    indices = np.arange(len(y))
+    train_indices, test_indices = train_test_split(indices, test_size=0.2, random_state=42)
+
+    train_loader, test_loader = create_data_loaders(
+        binding_site_graphs, substrate_embeddings, y, train_indices, test_indices)
+
+    if save:
+        os.makedirs("output/processed", exist_ok=True)
+        np.savez(f"output/processed/local_processed_{timestamp}.npz",
+                 substrate_embeddings=substrate_embeddings,
+                 y=y,
+                 train_indices=train_indices,
+                 test_indices=test_indices,
+                 metadata={
+                     "protein_sequences": protein_sequences,
+                     "substrate_smiles": substrate_smiles
+                 })
+        torch.save(binding_site_graphs, f"output/processed/graphs_{timestamp}.pt")
+        logger.info("保存完毕")
+
+    return train_loader, test_loader, binding_site_graphs, substrate_embeddings, y, train_indices, test_indices
+
 def save_processed_data_visualization(binding_site_features, substrate_embeddings, y, 
                                      protein_sequences, substrate_smiles, output_dir="output/viz/"):
     """保存处理后的数据可视化结果，方便检查"""
@@ -1030,7 +1105,7 @@ if __name__ == "__main__":
     
     # 处理数据
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    train_loader, test_loader, binding_site_features, substrate_embeddings, y, train_indices, test_indices = load_and_preprocess_data(
+    train_loader, test_loader, binding_site_features, substrate_embeddings, y, train_indices, test_indices = load_and_preprocess_pdbdata(
         args.data_path, timestamp=timestamp, save_processed=True, save_visualization=True  # 默认都保存
     )
     

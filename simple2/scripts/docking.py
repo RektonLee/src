@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import __main__
 __main__.pymol_argv = ['pymol', '-c']
-from joblib import Parallel, delayed
+# from joblib import Parallel, delayed
 import os
 import subprocess
 import numpy as np
@@ -20,11 +20,14 @@ os.makedirs(RAWPOCKET_DIR, exist_ok=True)
 
 
 def clean_altlocs(infile, outfile):
+    metals = {"MG", "MN", "FE", "ZN", "CA", "CU", "CO", "NI", "NA", "K", "CL"}  # 常见金属离子
     with open(infile) as fin, open(outfile, "w") as fout:
         for line in fin:
             if line.startswith(("ATOM", "HETATM")):
-                if (line[12:16].strip() == "K" or line[12:16].strip() == "SE" or line[12:16].strip() == "ZN"):
-                    continue
+                resname = line[17:20].strip()
+                atomname = line[12:16].strip()
+                if atomname in {"K", "SE", "ZN"} or resname in metals:
+                    continue  # 删除金属离子、杂原子
                 altloc = line[16]
                 if altloc in (" ", "A"):
                     fout.write(line[:16] + " " + line[17:])
@@ -110,7 +113,8 @@ def run_preprocess(uniprot_id, smiles, prot_pdb_path, output_dir,index):
     try:
         # 自动生成输出文件名（"prot_clean.pdb"）
         output_path = os.path.splitext(prot_pdb_path)[0] + "_clean.pdb"
-        
+        if smiles=="C(=O)=O":
+            raise ValueError("❌ SMILES 解析失败: C(=O)=O")
         # 调用函数
         clean_altlocs(prot_pdb_path, output_path)
         smiles_to_3d(smiles, "ligand.pdb")
@@ -174,7 +178,7 @@ def run_preprocess(uniprot_id, smiles, prot_pdb_path, output_dir,index):
 
 
 if __name__ == "__main__":
-    df = pd.read_csv("/home/lizihao/Work/enzyme_prediction/data/cleaned_data.csv")
+    df = pd.read_csv("/home/lizihao/Work/enzyme_prediction/data/remain.csv")
     os.makedirs("data/processed/pockets", exist_ok=True)
     print(f"Working directory: {os.getcwd()}")
     # ...existing code...

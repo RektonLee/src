@@ -36,19 +36,21 @@ class PocketGNN(nn.Module):
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
+        
+        # 确保没有孤立节点
         edge_index, _ = utils.add_self_loops(edge_index, num_nodes=x.size(0))
-       
-        # Embedding atom type
-        x = self.linear(x)# [N, hidden_dim]
-
-        # Message passing
+        
+        # 特征变换
+        x = self.linear(x)
+        
+        # 消息传递
         x = F.relu(self.conv1(x, edge_index))
         x = F.relu(self.conv2(x, edge_index))
         x = F.relu(self.conv3(x, edge_index))
-
-        # Global pooling
-        x = self.readout(x, batch)
-
-        # MLP regression
-        out = self.mlp(x)
+        
+        # 全局池化 - 这里确保每个图会被池化为一个向量
+        x = self.readout(x, batch)  # [batch_size, hidden_dim]
+        
+        # MLP回归
+        out = self.mlp(x)  # [batch_size, 2]
         return out

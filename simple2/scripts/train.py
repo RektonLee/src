@@ -5,7 +5,7 @@ import os
 import numpy as np
 from torch_geometric.loader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from GNN_model import PocketGNN
+from GNN_model import PocketGNN1
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from scipy.stats import pearsonr
 import matplotlib
@@ -38,7 +38,9 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=1
     val_loader = DataLoader(data_list[split:], batch_size=batch_size)
 
     # === Initialize model ===
-    model = PocketGNN(num_atom_types=actual_num_atom_types).to(device)
+    node_input_dim = data_list[0].x.shape[1] #default 10
+    edge_input_dim = data_list[0].edge_attr.shape[1]
+    model = PocketGNN1(node_input_dim=node_input_dim, edge_input_dim=edge_input_dim).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
     best_val_loss = float('inf')
@@ -155,8 +157,8 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=1
             batch_size = batch.num_graphs
             log_y = torch.log10(batch.y.view(batch_size, -1))
             out = model(batch)
-            all_y_true.append(10**log_y.cpu())  # 转回原始值
-            all_y_pred.append(10**out.cpu())    # 转回原始值
+            all_y_true.append(log_y.cpu())  # 转回原始值
+            all_y_pred.append(out.cpu())    # 转回原始值
     
     all_y_true = torch.cat(all_y_true, dim=0).numpy()
     all_y_pred = torch.cat(all_y_pred, dim=0).numpy()
@@ -215,7 +217,18 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=1
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default="data/processed/dataset_raw.pt", help='Path to .pt dataset')
-    parser.add_argument('--save_dir', type=str, default='outputs/raw1')
+    parser.add_argument('--dataset', type=str, default="data/processed/dataset1.pt", help='Path to .pt dataset')
+    parser.add_argument('--save_dir', type=str, default='outputs/1')
     args = parser.parse_args()
+    from utils.metadata_utils import save_metadata
+
+    # 训练开始时，加上这行保存metadata
+    save_metadata(
+        save_dir=args.save_dir,
+        dataset_path=args.dataset,
+        graph_builder_version='v1-pocket-enhanced',
+        gnn_model_version='PocketGNN_v2-edgeaware',
+        comments='丰富了Pocket特征（元素+残基+配体标志+局部密度），未引入电荷和等变性'
+    )
+
     train(args.dataset, args.save_dir)

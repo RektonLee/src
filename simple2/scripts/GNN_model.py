@@ -107,6 +107,22 @@ class PocketGNN1(nn.Module):
         x = self.readout(x, batch)
         out = self.mlp(x)
         return out
+    def get_graph_embedding(self, data):
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+        x = self.node_encoder(x)
+        for layer in self.layers:
+            x = x + layer(x, edge_index, edge_attr)
+        x = self.readout(x, batch)  # 🔹 关键：池化为图表示
+        return x
+    def get_graph_embedding(self, data):
+        """获取图嵌入表示(在池化层之前)"""
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+        x = self.node_encoder(x)
+        
+        for layer in self.layers:
+            x = x + layer(x, edge_index, edge_attr)
+            
+        return x  # 返回节点级嵌入，不进行池化
 
 
 class PocketGNN_Gated(nn.Module):

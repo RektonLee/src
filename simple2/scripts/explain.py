@@ -24,16 +24,19 @@ def write_importance_to_pdb(pdb_path, importance_array, output_pdb):
 def explain(model_path, graph_path, pocket_pdb_path, task_idx=0, save_dir="outputs_explain"):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(save_dir, exist_ok=True)
-
-    # Load model
-    model = PocketGNN(num_atom_types=20).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
-
     # Load graph
     data_list = torch.load(graph_path)  # Assume List[Data]
     loader = DataLoader(data_list, batch_size=1)
-
+       # Load model
+    sample_data = data_list[0]
+    node_feature_dim = sample_data.x.size(1)
+    edge_feature_dim = sample_data.edge_attr.size(1)
+    model = PocketGNN1(
+        node_input_dim=node_feature_dim,
+        edge_input_dim=edge_feature_dim,
+    ).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
     all_importances = []
 
     for batch in loader:

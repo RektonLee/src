@@ -96,6 +96,11 @@ class PocketGNN1(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 2)  # Predict [kcat, Km]
         )
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
@@ -106,6 +111,11 @@ class PocketGNN1(nn.Module):
 
         x = self.readout(x, batch)
         out = self.mlp(x)
+        
+        # 检查模型输出是否包含 NaN
+        if torch.isnan(out).any():
+            raise ValueError("模型输出包含 NaN 值")
+        
         return out
     def get_graph_embedding(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch

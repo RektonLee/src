@@ -25,12 +25,20 @@ def compute_metrics(y_true_log, y_pred_log):
     }
 
 def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=100):
+    dataset = torch.load(dataset_path)
+    
+    # 检查数据集是否包含 NaN
+    for data in dataset:
+        if torch.isnan(data.x).any() or torch.isnan(data.y).any():
+            raise ValueError("数据集中包含 NaN 值")
+    
     device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
     os.makedirs(save_dir, exist_ok=True)
     writer = SummaryWriter(save_dir)
 
     # === Load dataset ===
     data_list = torch.load(dataset_path)  # List[Data]
+    print(data_list[0])  # 打印第一个图数据
     actual_num_atom_types = data_list[0].x.shape[1]
     np.random.shuffle(data_list)
     split = int(0.8 * len(data_list))
@@ -73,6 +81,7 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=1
             out = model(batch)
             loss = criterion(out, log_y)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # 梯度
             optimizer.step()
             train_losses.append(loss.item())
         train_loss = np.mean(train_losses)
@@ -217,8 +226,8 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=1
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default="data/processed/dataset1.pt", help='Path to .pt dataset')
-    parser.add_argument('--save_dir', type=str, default='outputs/1')
+    parser.add_argument('--dataset', type=str, default="/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr.pt", help='Path to .pt dataset')
+    parser.add_argument('--save_dir', type=str, default='outputs/nopqr')
     args = parser.parse_args()
     from utils.metadata_utils import save_metadata
 
@@ -226,9 +235,9 @@ if __name__ == '__main__':
     save_metadata(
         save_dir=args.save_dir,
         dataset_path=args.dataset,
-        graph_builder_version='v1-pocket-enhanced',
-        gnn_model_version='PocketGNN_v2-edgeaware',
-        comments='丰富了Pocket特征（元素+残基+配体标志+局部密度），未引入电荷和等变性'
+        graph_builder_version='builder2_elec',
+        gnn_model_version='PocketGNN1',
+        comments='丰富了Pocket特征（元素+残基+配体标志+局部密度），引入电荷未引入等变性'
     )
 
     train(args.dataset, args.save_dir)

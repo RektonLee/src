@@ -1,0 +1,7 @@
+{
+    "build_time": "2025-05-04 15:48",
+    "dataset_path": "data/processed/dataset1.pt",
+    "graph_builder_version": "builder2_elec",
+    "gnn_model_version": "PocketGNN1",
+    "comments": "\u4e30\u5bcc\u4e86Pocket\u7279\u5f81\uff08\u5143\u7d20+\u6b8b\u57fa+\u914d\u4f53\u6807\u5fd7+\u5c40\u90e8\u5bc6\u5ea6\uff09\uff0c\u5f15\u5165\u7535\u8377\u672a\u5f15\u5165\u7b49\u53d8\u6027"
+}

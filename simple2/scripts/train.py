@@ -5,7 +5,7 @@ import os
 import numpy as np
 from torch_geometric.loader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from GNN_model import PocketGNN1
+import GNN_model as MD
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from scipy.stats import pearsonr
 import matplotlib
@@ -24,7 +24,7 @@ def compute_metrics(y_true_log, y_pred_log):
         'Pearson': pearsonr(y_true_log.flatten(), y_pred_log.flatten())[0]
     }
 
-def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=100):
+def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=500):
     dataset = torch.load(dataset_path)
     
     # 检查数据集是否包含 NaN
@@ -48,7 +48,7 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=1
     # === Initialize model ===
     node_input_dim = data_list[0].x.shape[1] #default 10
     edge_input_dim = data_list[0].edge_attr.shape[1]
-    model = PocketGNN1(node_input_dim=node_input_dim, edge_input_dim=edge_input_dim).to(device)
+    model = MD.PocketGNNWithAttention(node_input_dim=node_input_dim, edge_input_dim=edge_input_dim).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
     best_val_loss = float('inf')
@@ -244,7 +244,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default="/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr.pt", help='Path to .pt dataset')
-    parser.add_argument('--save_dir', type=str, default='outputs/nopqr')
+    parser.add_argument('--save_dir', type=str, default='outputs/nopqr_attention_1')
     args = parser.parse_args()
     from utils.metadata_utils import save_metadata
 
@@ -252,9 +252,9 @@ if __name__ == '__main__':
     save_metadata(
         save_dir=args.save_dir,
         dataset_path=args.dataset,
-        graph_builder_version='builder2_elec',
-        gnn_model_version='PocketGNN1',
-        comments='丰富了Pocket特征（元素+残基+配体标志+局部密度），引入电荷未引入等变性'
+        graph_builder_version='builder2_elec_att',
+        gnn_model_version='PocketGNNwithAttention',
+        comments='丰富了Pocket特征（元素+残基+配体标志+局部密度），引入电荷,引入图中的attention'
     )
 
     train(args.dataset, args.save_dir)

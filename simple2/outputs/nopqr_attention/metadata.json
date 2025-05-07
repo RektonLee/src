@@ -1,0 +1,7 @@
+{
+    "build_time": "2025-05-07 14:06",
+    "dataset_path": "/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr.pt",
+    "graph_builder_version": "builder2_elec_att",
+    "gnn_model_version": "PocketGNNwithAttention",
+    "comments": "\u4e30\u5bcc\u4e86Pocket\u7279\u5f81\uff08\u5143\u7d20+\u6b8b\u57fa+\u914d\u4f53\u6807\u5fd7+\u5c40\u90e8\u5bc6\u5ea6\uff09\uff0c\u5f15\u5165\u7535\u8377,\u5f15\u5165\u56fe\u4e2d\u7684attention"
+}

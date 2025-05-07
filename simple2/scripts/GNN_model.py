@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, global_mean_pool,MessagePassing, GatedGraphConv
+from torch_geometric.nn import GCNConv, global_mean_pool,MessagePassing, GatedGraphConv,GATConv
 import torch_geometric.utils as utils
 
 class PocketGNN(nn.Module):
@@ -168,3 +168,148 @@ Loss优化 | 损失改为HuberLoss（生物实验数据噪声大，更稳定） 
 额外 | 保留pdb_id、原子索引信息，便于后续可解释性分析 | 
 
 '''
+
+
+class PocketGNNWithAttention(nn.Module):
+    """
+    GNN with Graph Attention Layers for Enzyme Kinetics (kcat, Km)
+    """
+    def __init__(self, node_input_dim, edge_input_dim, hidden_dim=256, num_layers=6, heads=8, dropout=0.1, concat_heads=True):
+        super().__init__()
+        self.node_encoder = nn.Linear(node_input_dim, hidden_dim)
+        # 如果GATConv也需要边特征，可以自定义GATConv或寻找支持边特征的变体
+        # PyG的GATConv默认不直接使用edge_attr进行注意力计算，但可以在消息传递中加入
+        # 这里我们先用标准的GATConv，如果需要严格的边特征参与注意力，需要进一步定制
+
+        self.att_layers = nn.ModuleList()
+        current_dim = hidden_dim
+        for i in range(num_layers):
+            # 如果 concat_heads 为 True，输出维度是 hidden_dim * heads
+            # 如果为 False (通常在最后一层或中间层后接线性变换)，输出维度是 hidden_dim
+            # 这里我们让每一层的输出维度保持为 hidden_dim (如果是多头拼接，之后需要一个线性层降维)
+            # 或者，我们可以让GATConv的out_channels = hidden_dim // heads，然后concat后维度还是hidden_dim
+
+            # 方案1: 输出维度 hidden_dim * heads，然后用线性层降维 (更灵活)
+            # self.att_layers.append(
+            #     GATConv(current_dim, hidden_dim, heads=heads, dropout=dropout, concat=True)
+            # )
+            # current_dim = hidden_dim * heads # 更新下一层的输入维度
+            # # 如果需要保持hidden_dim，可以在每层GATConv后加一个线性层
+            # self.add_module(f"lin_after_gat_{i}", nn.Linear(hidden_dim * heads, hidden_dim))
+
+            # 方案2: GATConv直接输出hidden_dim (通过调整out_channels和concat)
+            # 最后一层GAT通常concat=False 或者 heads=1 (或平均)
+            is_last_gat_layer = (i == num_layers - 1)
+            if concat_heads and not is_last_gat_layer: # 中间层多头拼接
+                self.att_layers.append(
+                    GATConv(current_dim, hidden_dim // heads, heads=heads, dropout=dropout, concat=True, edge_dim=edge_input_dim if i==0 else None) # 假设第一层可以接受edge_dim
+                )
+                current_dim = hidden_dim # 因为 hidden_dim // heads * heads == hidden_dim
+            else: # 最后一层GAT，或者不拼接头 (此时通常会对头的结果取平均)
+                 self.att_layers.append(
+                    GATConv(current_dim, hidden_dim, heads=heads, dropout=dropout, concat=False, edge_dim=edge_input_dim if i==0 else None) # concat=False，输出维度是hidden_dim
+                )
+                 current_dim = hidden_dim
+
+
+        self.readout = global_mean_pool
+        self.mlp = nn.Sequential(
+            nn.Linear(current_dim, hidden_dim), #确保这里的current_dim与GAT层输出一致
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 2)  # Predict [kcat, Km]
+        )
+
+        # 权重初始化 (可选，但通常有益)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, GATConv):
+                # GATConv内部有自己的初始化，但也可以覆盖
+                pass
+
+
+    def forward(self, data, return_attention_weights=False):
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+
+        x = self.node_encoder(x)
+        x = F.relu(x) # 通常在编码后加激活
+
+        all_attention_weights = []
+
+        for i, layer in enumerate(self.att_layers):
+            # GATConv的forward方法可以返回注意力权重
+            # x_new, attention_weights = layer(x, edge_index, return_attention_weights=True)
+            # 如果GATConv层支持edge_dim, 需要传递进去
+            if hasattr(layer, 'edge_dim') and layer.edge_dim is not None and i==0 : # 假设只有第一层用原始edge_attr
+                 x_new, attention_info = layer(x, edge_index, edge_attr=edge_attr, return_attention_weights=True)
+            else:
+                 x_new, attention_info = layer(x, edge_index, return_attention_weights=True)
+
+            x = x_new # 更新节点表示
+            x = F.elu(x) # GAT论文中常用elu作为激活函数
+            # x = F.dropout(x, p=self.mlp[2].p if hasattr(self.mlp[2], 'p') else 0.1, training=self.training) # 在GAT层之间也可以加dropout
+
+            if return_attention_weights:
+                # attention_info 是一个元组 (edge_index_with_attention, attention_weights_per_head)
+                # attention_weights_per_head 的形状是 [num_edges, num_heads]
+                all_attention_weights.append(attention_info[1])
+
+            # 如果之前GATConv的输出是 current_dim * heads (concat=True)，且需要保持hidden_dim
+            # lin_layer = getattr(self, f"lin_after_gat_{i}", None)
+            # if lin_layer:
+            #     x = lin_layer(x)
+            #     x = F.elu(x) # 再次激活
+
+        # 图级别表示
+        graph_x = self.readout(x, batch)
+
+        # MLP回归
+        out = self.mlp(graph_x)
+
+        if torch.isnan(out).any():
+            raise ValueError("模型输出包含 NaN 值")
+
+        if return_attention_weights:
+            return out, all_attention_weights
+        else:
+            return out
+
+    def get_graph_embedding(self, data):
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+        x = self.node_encoder(x)
+        x = F.relu(x)
+
+        for i, layer in enumerate(self.att_layers):
+            if hasattr(layer, 'edge_dim') and layer.edge_dim is not None and i==0:
+                 x = layer(x, edge_index, edge_attr=edge_attr)
+            else:
+                 x = layer(x, edge_index)
+            x = F.elu(x)
+            # lin_layer = getattr(self, f"lin_after_gat_{i}", None)
+            # if lin_layer:
+            #     x = lin_layer(x)
+            #     x = F.elu(x)
+
+        graph_x = self.readout(x, batch)
+        return graph_x
+
+    # 如果需要获取节点级别的嵌入（池化前）
+    def get_node_embeddings_before_pool(self, data):
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+        x = self.node_encoder(x)
+        x = F.relu(x)
+
+        for i, layer in enumerate(self.att_layers):
+            if hasattr(layer, 'edge_dim') and layer.edge_dim is not None and i==0:
+                 x = layer(x, edge_index, edge_attr=edge_attr)
+            else:
+                 x = layer(x, edge_index)
+            x = F.elu(x)
+            # lin_layer = getattr(self, f"lin_after_gat_{i}", None)
+            # if lin_layer:
+            #     x = lin_layer(x)
+            #     x = F.elu(x)
+        return x # 返回节点级嵌入，不进行池化

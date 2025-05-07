@@ -18,7 +18,7 @@ from tqdm import tqdm
 # ==== 配置参数 ====
 CSV_PATH = '/home/lizihao/Work/enzyme_prediction/data/cleaned_data.csv'
 POCKET_DIR = 'data/processed/pockets'
-SAVE_PATH = 'data/processed/dataset_NAN_nopqr.pt'
+SAVE_PATH = 'data/processed/dataset_NAN_nopqr_test.pt'
 DIST_CUTOFF = 3.0  # 距离阈值（Å）
 
 # ==== 编码器 ====
@@ -129,7 +129,9 @@ def build_graph(atoms):
         x=torch.tensor(node_features, dtype=torch.float),
         pos=pos,
         edge_index=edge_index,
-        edge_attr=edge_attr  # 添加边属性
+        edge_attr=edge_attr,  # 添加边属性
+        temp=200,
+        pH=7
     )
     return data
 
@@ -153,13 +155,20 @@ if __name__ == '__main__':
         if len(atoms)<3:
             continue
 
-        kcat = row.get('kcat Wildtype', 0.0)
-        km = row.get('Km Wildtype', 0.0)
+        kcat = row.get('kcat Wildtype', np.nan)
+        km = row.get('Km Wildtype', np.nan)
+
+        # 过滤无效或非法值
+        if not np.isfinite(kcat) or not np.isfinite(km):
+            continue
         if kcat <= 0 or km <= 0:
             continue
 
         data = build_graph(atoms)
         label = torch.log10(torch.tensor([kcat, km], dtype=torch.float))
+        if not np.all(np.isfinite(label.numpy())):
+         raise ValueError(f"标签非法值: {label}")
+
         data.y = label
         data.pdb_id = pdb_file
         dataset.append(data)

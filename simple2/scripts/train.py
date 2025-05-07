@@ -63,25 +63,33 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=1
         model.train()
         train_losses = []
         for batch in train_loader:
-            # 打印调试信息
-            if epoch == 1:  # 只在第一轮打印
-                print(f"输入特征形状: {batch.x.shape}")
-                print(f"边索引形状: {batch.edge_index.shape}")
-                print(f"目标标签形状: {batch.y.shape}")
-                print(f"目标标签: {batch.y}")
-            
+            # print("✅ batch.y.shape:", batch.y.shape)
+            # print("✅ batch.batch.shape:", batch.batch.shape)
+            # print("✅ batch_size:", batch_size)
+            # print("❓ batch.y:", batch.y)
+
             batch = batch.to(device)
             optimizer.zero_grad()
             
             # 重新组织标签 - 将相邻的kcat和Km配对
-            batch_size = batch.num_graphs
-            y_reshaped = batch.y.reshape(batch_size, 2)  # 正确的方式：每两个值组成一对[kcat, Km]
-            log_y = torch.log10(y_reshaped)  # 取对数
+            actual_batch_size = batch.num_graphs  # 使用实际的 batch size
+            y_reshaped = batch.y.reshape(actual_batch_size, 2)  # 每两个值组成一对[kcat, Km]
+            log_y = y_reshaped
             
+            if torch.isnan(batch.x).any():
+                print("❌ batch.x 中含有 NaN")
+            if torch.isnan(batch.edge_attr).any():
+                print("❌ batch.edge_attr 中含有 NaN")
+            if torch.isnan(batch.y).any():
+                print("❌ batch.y 中含有 NaN")
+            # print("batch.x max:", batch.x.max().item(), "min:", batch.x.min().item())
+            # print("batch.edge_attr max:", batch.edge_attr.max().item(), "min:", batch.edge_attr.min().item())
+            # print("batch.y:", batch.y[:5])
             out = model(batch)
+           
             loss = criterion(out, log_y)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # 梯度
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # 梯度裁剪
             optimizer.step()
             train_losses.append(loss.item())
         train_loss = np.mean(train_losses)
@@ -95,11 +103,15 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=1
                 batch = batch.to(device)
                 
                 # 重新组织标签
-                batch_size = batch.num_graphs
-                y_reshaped = batch.y.reshape(batch_size, 2)
-                log_y = torch.log10(y_reshaped)
+                actual_batch_size = batch.num_graphs  # 使用实际的 batch size
+                y_reshaped = batch.y.reshape(actual_batch_size, 2)  # 每两个值组成一对[kcat, Km]
+                log_y = y_reshaped
                 
-                out = model(batch)
+                try:
+                    out = model(batch)
+                except ValueError as e:
+                    print(f"❌ NaN 输出，batch中数据文件: {[d.pdb_id for d in batch]}")
+                    raise e
                 loss = criterion(out, log_y)
                 val_losses.append(loss.item())
                 y_true_log.append(log_y.cpu())
@@ -164,8 +176,13 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=1
         for batch in val_loader:
             batch = batch.to(device)
             batch_size = batch.num_graphs
-            log_y = torch.log10(batch.y.view(batch_size, -1))
-            out = model(batch)
+
+            log_y = batch.y.view(batch_size, -1)
+            try:
+                out = model(batch)
+            except ValueError as e:
+                print(f"❌ NaN 输出，batch中数据文件: {[d.pdb_id for d in batch]}")
+                raise e
             all_y_true.append(log_y.cpu())  # 转回原始值
             all_y_pred.append(out.cpu())    # 转回原始值
     

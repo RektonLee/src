@@ -1,0 +1,1 @@
+Pearson correlation between kcat and Km predictions: 0.2088

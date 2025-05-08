@@ -45,6 +45,7 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
     train_loader = DataLoader(data_list[:split], batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(data_list[split:], batch_size=batch_size)
 
+    print(data_list[0].temperature)
     # === Initialize model ===
     node_input_dim = data_list[0].x.shape[1] #default 10
     edge_input_dim = data_list[0].edge_attr.shape[1]
@@ -243,8 +244,8 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default="/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr.pt", help='Path to .pt dataset')
-    parser.add_argument('--save_dir', type=str, default='outputs/nopqr_attention_try')
+    parser.add_argument('--dataset', type=str, default="/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr_rbf.pt", help='Path to .pt dataset')
+    parser.add_argument('--save_dir', type=str, default='outputs/nopqr_attention_rbf')
     args = parser.parse_args()
     from utils.metadata_utils import save_metadata
 
@@ -252,9 +253,9 @@ if __name__ == '__main__':
     save_metadata(
         save_dir=args.save_dir,
         dataset_path=args.dataset,
-        graph_builder_version='builder2_elec_try',
+        graph_builder_version='builder_rbf',
         gnn_model_version='PocketGNNwithAttention',
-        comments='try'
+        comments='Temp + Attention + rbf'
     )
 
     train(args.dataset, args.save_dir)

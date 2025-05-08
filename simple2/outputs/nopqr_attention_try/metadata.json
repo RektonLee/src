@@ -1,6 +1,6 @@
 {
-    "build_time": "2025-05-08 17:09",
-    "dataset_path": "/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr.pt",
+    "build_time": "2025-05-08 18:04",
+    "dataset_path": "/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr_temp.pt",
     "graph_builder_version": "builder2_elec_try",
     "gnn_model_version": "PocketGNNwithAttention",
     "comments": "try"

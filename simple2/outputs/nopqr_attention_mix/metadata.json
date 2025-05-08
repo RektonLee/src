@@ -1,8 +1,8 @@
 {
-    "build_time": "2025-05-07 15:22",
+    "build_time": "2025-05-08 15:29",
     "dataset_path": "/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr.pt",
-    "graph_builder_version": "builder2_elec_att",
-    "gnn_model_version": "PocketGNNwithAttention",
+    "graph_builder_version": "builder2_elec_emb",
+    "gnn_model_version": "PocketGNNV2",
     "comments": "HyperParameters.Enriched Pocket features (element + residue + ligand mark + local density), introduced charge, introduced attention in the graph",
     "hidden_dim": 256,
     "num_layers": 6,

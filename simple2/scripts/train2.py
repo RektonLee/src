@@ -24,7 +24,15 @@ def compute_metrics(y_true_log, y_pred_log):
         'Pearson': pearsonr(y_true_log.flatten(), y_pred_log.flatten())[0]
     }
 
-def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=500):
+# 在文件开头添加原子和残基类型定义
+element_list = ['C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I', 'H']
+residue_list = ['ALA','ARG','ASN','ASP','CYS','GLN','GLU','GLY','HIS','ILE',
+                'LEU','LYS','MET','PHE','PRO','SER','THR','TRP','TYR','VAL','LIG']
+
+def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=500,
+          hidden_dim=256, num_layers=6, heads=8, dropout=0.1,
+          atom_embed_dim=32, residue_embed_dim=32, temperature_embed_dim=8):
+    
     dataset = torch.load(dataset_path)
     
     # 检查数据集是否包含 NaN
@@ -46,9 +54,20 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
     val_loader = DataLoader(data_list[split:], batch_size=batch_size)
 
     # === Initialize model ===
-    node_input_dim = data_list[0].x.shape[1] #default 10
+    node_input_dim = data_list[0].x.shape[1]
     edge_input_dim = data_list[0].edge_attr.shape[1]
-    model = MD.PocketGNNWithAttention(node_input_dim=node_input_dim, edge_input_dim=edge_input_dim).to(device)
+    
+    model = MD.PocketGNNV2(
+        node_input_dim=node_input_dim,
+        edge_input_dim=edge_input_dim,
+        num_atom_types=len(element_list),
+        num_residue_types=len(residue_list),
+        atom_embed_dim=atom_embed_dim,
+        residue_embed_dim=residue_embed_dim,
+        temperature_embed_dim=temperature_embed_dim,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers
+    ).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
     best_val_loss = float('inf')
@@ -243,8 +262,8 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default="/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr.pt", help='Path to .pt dataset')
-    parser.add_argument('--save_dir', type=str, default='outputs/nopqr_attention_try')
+    parser.add_argument('--dataset', type=str, default="/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_rbf.pt", help='Path to .pt dataset')
+    parser.add_argument('--save_dir', type=str, default='outputs/nopqr_attention_embed')
     args = parser.parse_args()
     from utils.metadata_utils import save_metadata
 
@@ -252,9 +271,9 @@ if __name__ == '__main__':
     save_metadata(
         save_dir=args.save_dir,
         dataset_path=args.dataset,
-        graph_builder_version='builder2_elec_try',
-        gnn_model_version='PocketGNNwithAttention',
-        comments='try'
+        graph_builder_version='builder2_elec_embedding',
+        gnn_model_version='PocketGNNV2',
+        comments='with node embedding'
     )
 
     train(args.dataset, args.save_dir)

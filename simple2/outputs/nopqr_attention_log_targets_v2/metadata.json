@@ -1,0 +1,27 @@
+{
+    "build_time": "2025-05-07 16:06",
+    "dataset_path": "/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr.pt",
+    "graph_builder_version": "builder2_elec_att",
+    "gnn_model_version": "PocketGNNwithAttention",
+    "comments": "Training on standardized log10 transformed targets (kcat, Km). Attention in GNN. Enriched pocket features.",
+    "hidden_dim": 256,
+    "num_layers": 6,
+    "heads": 8,
+    "dropout": 0.1,
+    "lr_initial": 0.001,
+    "batch_size": 32,
+    "max_epochs": 500,
+    "optimizer": "Adam",
+    "weight_decay": 0.0,
+    "loss_fn_on_scaled_log": "MSE",
+    "lr_scheduler": "ReduceLROnPlateau",
+    "mean_log_y": [
+        0.959267795085907,
+        -3.862321615219116
+    ],
+    "std_log_y": [
+        1.4414846897125244,
+        1.2316399812698364
+    ],
+    "training_target_scale": "standardized_log10"
+}

@@ -2,13 +2,14 @@ import os
 import json
 from datetime import datetime
 
-def save_metadata(save_dir, dataset_path, graph_builder_version, gnn_model_version, comments=""):
+def save_metadata(save_dir, dataset_path, graph_builder_version, gnn_model_version, comments="", **kwargs):
     metadata = {
         "build_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "dataset_path": dataset_path,
         "graph_builder_version": graph_builder_version,
         "gnn_model_version": gnn_model_version,
-        "comments": comments
+        "comments": comments,
+        **kwargs  # 将传入的其他关键字参数（超参数）添加到 metadata 中
     }
     os.makedirs(save_dir, exist_ok=True)
     metadata_path = os.path.join(save_dir, "metadata.json")

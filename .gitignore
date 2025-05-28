@@ -11,3 +11,4 @@ events.*
 *.pt
 *.pyc
 *.log
+*.csv

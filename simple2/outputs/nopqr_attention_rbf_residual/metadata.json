@@ -1,0 +1,7 @@
+{
+    "build_time": "2025-05-08 18:52",
+    "dataset_path": "/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr_rbf.pt",
+    "graph_builder_version": "builder_rbf",
+    "gnn_model_version": "PocketGNNwithAttention",
+    "comments": "Temp + Attention + rbf+residual connection"
+}

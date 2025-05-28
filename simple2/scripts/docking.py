@@ -178,7 +178,7 @@ def run_preprocess(uniprot_id, smiles, prot_pdb_path, output_dir,index):
 
 
 if __name__ == "__main__":
-    df = pd.read_csv("/home/lizihao/Work/enzyme_prediction/data/remain.csv")
+    df = pd.read_csv("/home/lizihao/Work/enzyme_prediction/data/Example.csv")
     os.makedirs("data/processed/pockets", exist_ok=True)
     print(f"Working directory: {os.getcwd()}")
     # ...existing code...

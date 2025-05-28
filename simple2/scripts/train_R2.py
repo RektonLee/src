@@ -17,11 +17,14 @@ import pandas as pd
 def compute_metrics(y_true_log, y_pred_log):
     y_true_log = y_true_log.numpy()
     y_pred_log = y_pred_log.numpy()
+    # 还原到原始尺度
+    y_true = 10 ** y_true_log
+    y_pred = 10 ** y_pred_log
     return {
-        'MAE': mean_absolute_error(y_true_log, y_pred_log),
-        'RMSE': np.sqrt(mean_squared_error(y_true_log, y_pred_log)),
-        'R2': r2_score(y_true_log, y_pred_log),
-        'Pearson': pearsonr(y_true_log.flatten(), y_pred_log.flatten())[0]
+        'MAE': mean_absolute_error(y_true, y_pred),
+        'RMSE': np.sqrt(mean_squared_error(y_true, y_pred)),
+        'R2': r2_score(y_true, y_pred),
+        'Pearson': pearsonr(y_true.flatten(), y_pred.flatten())[0]
     }
 
 def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=500):
@@ -64,11 +67,6 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
         model.train()
         train_losses = []
         for batch in train_loader:
-            # print("✅ batch.y.shape:", batch.y.shape)
-            # print("✅ batch.batch.shape:", batch.batch.shape)
-            # print("✅ batch_size:", batch_size)
-            # print("❓ batch.y:", batch.y)
-
             batch = batch.to(device)
             optimizer.zero_grad()
             
@@ -83,9 +81,6 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
                 print("❌ batch.edge_attr 中含有 NaN")
             if torch.isnan(batch.y).any():
                 print("❌ batch.y 中含有 NaN")
-            # print("batch.x max:", batch.x.max().item(), "min:", batch.x.min().item())
-            # print("batch.edge_attr max:", batch.edge_attr.max().item(), "min:", batch.edge_attr.min().item())
-            # print("batch.y:", batch.y[:5])
             out = model(batch)
            
             loss = criterion(out, log_y)
@@ -170,8 +165,8 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
     model.load_state_dict(torch.load(os.path.join(save_dir, "best_model.pt")))
     model.eval()
     
-    all_y_true = []
-    all_y_pred = []
+    all_y_true_log = []
+    all_y_pred_log = []
     
     with torch.no_grad():
         for batch in val_loader:
@@ -184,11 +179,15 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
             except ValueError as e:
                 print(f"❌ NaN 输出，batch中数据文件: {[d.pdb_id for d in batch]}")
                 raise e
-            all_y_true.append(log_y.cpu())  # 转回原始值
-            all_y_pred.append(out.cpu())    # 转回原始值
+            all_y_true_log.append(log_y.cpu())
+            all_y_pred_log.append(out.cpu())
     
-    all_y_true = torch.cat(all_y_true, dim=0).numpy()
-    all_y_pred = torch.cat(all_y_pred, dim=0).numpy()
+    all_y_true_log = torch.cat(all_y_true_log, dim=0)
+    all_y_pred_log = torch.cat(all_y_pred_log, dim=0)
+    
+    # 还原到原始尺度
+    all_y_true = 10 ** all_y_true_log.numpy()
+    all_y_pred = 10 ** all_y_pred_log.numpy()
     
     # 分别绘制kcat和Km的散点图
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
@@ -238,6 +237,15 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
         'Pearson': pearson_history
     })
     metrics_df.to_csv(os.path.join(save_dir, 'training_metrics.csv'), index=False)
+
+    # 保存预测值和真实值到表格
+    result_df = pd.DataFrame({
+        'True_kcat': all_y_true[:, 0],
+        'Predicted_kcat': all_y_pred[:, 0],
+        'True_Km': all_y_true[:, 1],
+        'Predicted_Km': all_y_pred[:, 1]
+    })
+    result_df.to_csv(os.path.join(save_dir, 'prediction_results.csv'), index=False)
     
     print("✅ Training finished. Best model and plots saved to", save_dir)
 
@@ -245,7 +253,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default="/home/lizihao/Work/enzyme_prediction/src/simple2/data/processed/dataset_NAN_nopqr_rbf.pt", help='Path to .pt dataset')
-    parser.add_argument('--save_dir', type=str, default='outputs/nopqr_attention_rbf_residual')
+    parser.add_argument('--save_dir', type=str, default='outputs/nopqr_attention_rbf_residual_R2')
     args = parser.parse_args()
     from utils.metadata_utils import save_metadata
 

@@ -1,7 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, global_mean_pool,MessagePassing, GatedGraphConv,GATConv
+from torch_geometric.nn import (
+    GCNConv,
+    MessagePassing,
+    GatedGraphConv,
+    GATConv,
+    global_add_pool,
+    global_max_pool,
+    global_mean_pool,
+)
 import torch_geometric.utils as utils
 
 class PocketGNN(nn.Module):
@@ -500,5 +508,149 @@ class PocketGNNKcatOnly(nn.Module):
             x = F.elu(x)
 
         graph_x = self.readout(x, batch)
+        return graph_x
+
+
+class EquivariantLayer(MessagePassing):
+    """Lightweight E(3)-equivariant layer with physics-inspired priors."""
+
+    def __init__(self, hidden_dim: int, edge_dim: int, dropout: float = 0.1):
+        super().__init__(aggr="add")
+        physics_dim = edge_dim + 3  # edge features + dist + dist^2 + LJ term
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(2 * hidden_dim + physics_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+        )
+        self.coord_mlp = nn.Sequential(
+            nn.Linear(physics_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.node_mlp = nn.Sequential(
+            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.feature_norm = nn.LayerNorm(hidden_dim)
+        self.lj_sigma = nn.Parameter(torch.tensor(3.5))
+        self.lj_epsilon = nn.Parameter(torch.tensor(1.0))
+
+    def _lennard_jones(self, dist: torch.Tensor) -> torch.Tensor:
+        sigma = F.softplus(self.lj_sigma)
+        epsilon = F.softplus(self.lj_epsilon)
+        dist = dist.clamp(min=1e-4)
+        inv_r = sigma / dist
+        return epsilon * (inv_r.pow(12) - 2 * inv_r.pow(6))
+
+    def forward(self, x, pos, edge_index, edge_attr):
+        row, col = edge_index
+        diff = pos[row] - pos[col]
+        dist = torch.norm(diff, dim=-1, keepdim=True).clamp(min=1e-4)
+        dist2 = dist.pow(2)
+        lj_term = self._lennard_jones(dist)
+
+        physics_feat = torch.cat([edge_attr, dist, dist2, lj_term], dim=-1)
+        message_input = torch.cat([x[row], x[col], physics_feat], dim=-1)
+        m_ij = self.edge_mlp(message_input)
+
+        coord_coeff = self.coord_mlp(physics_feat)
+        pos_delta = diff * coord_coeff
+
+        agg_message = torch.zeros_like(x)
+        agg_message.index_add_(0, row, m_ij)
+
+        pos_update = torch.zeros_like(pos)
+        pos_update.index_add_(0, row, pos_delta)
+        counts = torch.zeros(pos.size(0), device=pos.device).index_add_(
+            0, row, torch.ones_like(row, dtype=pos.dtype)
+        )
+        counts = counts.clamp(min=1.0)
+        pos_update = pos_update / counts.unsqueeze(-1)
+
+        x_updated = self.node_mlp(torch.cat([x, agg_message], dim=-1))
+        x = self.feature_norm(x + x_updated)
+        pos = pos + pos_update
+        return x, pos
+
+
+class EquivariantPocketGNNKcat(nn.Module):
+    """E(3)-equivariant kcat regressor with physics-informed messages."""
+
+    def __init__(
+        self,
+        node_input_dim,
+        edge_input_dim,
+        hidden_dim=256,
+        num_layers=4,
+        dropout=0.1,
+    ):
+        super().__init__()
+        self.node_encoder = nn.Sequential(
+            nn.Linear(node_input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+        )
+        self.edge_encoder = nn.Linear(edge_input_dim, hidden_dim // 2)
+        self.layers = nn.ModuleList(
+            [EquivariantLayer(hidden_dim, hidden_dim // 2, dropout=dropout) for _ in range(num_layers)]
+        )
+        self.dropout = nn.Dropout(dropout)
+        self.readout_mean = global_mean_pool
+        self.readout_max = global_max_pool
+        self.readout_sum = global_add_pool
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+
+    def forward(self, data):
+        x, edge_index, edge_attr, batch, pos = (
+            data.x,
+            data.edge_index,
+            data.edge_attr,
+            data.batch,
+            data.pos,
+        )
+        x = self.node_encoder(x)
+        edge_attr = self.edge_encoder(edge_attr)
+
+        for layer in self.layers:
+            x, pos = layer(x, pos, edge_index, edge_attr)
+
+        graph_mean = self.readout_mean(x, batch)
+        graph_max = self.readout_max(x, batch)
+        graph_sum = self.readout_sum(x, batch)
+        graph_x = torch.cat([graph_mean, graph_max, graph_sum], dim=-1)
+        out = self.head(graph_x)
+
+        if torch.isnan(out).any():
+            raise ValueError("模型输出包含 NaN 值")
+        return out
+
+    def get_graph_embedding(self, data):
+        x, edge_index, edge_attr, batch, pos = (
+            data.x,
+            data.edge_index,
+            data.edge_attr,
+            data.batch,
+            data.pos,
+        )
+        x = self.node_encoder(x)
+        edge_attr = self.edge_encoder(edge_attr)
+        for layer in self.layers:
+            x, pos = layer(x, pos, edge_index, edge_attr)
+        graph_mean = self.readout_mean(x, batch)
+        graph_max = self.readout_max(x, batch)
+        graph_sum = self.readout_sum(x, batch)
+        graph_x = torch.cat([graph_mean, graph_max, graph_sum], dim=-1)
         return graph_x
 

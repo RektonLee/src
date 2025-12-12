@@ -24,7 +24,14 @@ def compute_metrics(y_true_log, y_pred_log):
         'Pearson': pearsonr(y_true_log.flatten(), y_pred_log.flatten())[0]
     }
 
-def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=500):
+def train(
+    dataset_path,
+    save_dir="outputs",
+    batch_size=32,
+    lr=1e-3,
+    max_epochs=500,
+    model_name="PocketGNNKcatOnly",
+):
     dataset = torch.load(dataset_path)
     
     # 检查数据集是否包含 NaN
@@ -51,8 +58,24 @@ def train(dataset_path, save_dir="outputs", batch_size=32, lr=1e-3, max_epochs=5
     edge_input_dim = data_list[0].edge_attr.shape[1]  # 现在应该是24维
     print(f"Node input dim: {node_input_dim}, Edge input dim: {edge_input_dim}")
     
-    # 使用新的kcat专用模型
-    model = MD.PocketGNNKcatOnly(node_input_dim=node_input_dim, edge_input_dim=edge_input_dim).to(device)
+    if model_name == "PocketGNNKcatOnly":
+        model = MD.PocketGNNKcatOnly(
+            node_input_dim=node_input_dim, edge_input_dim=edge_input_dim
+        ).to(device)
+    elif model_name == "EquivariantPocketGNN":
+        model = MD.EquivariantPocketGNNKcat(
+            node_input_dim=node_input_dim, edge_input_dim=edge_input_dim
+        ).to(device)
+    elif model_name == "MultiModalEquivariantPocketGNN":
+        seq_available = hasattr(data_list[0], "sequence_tokens") or hasattr(data_list[0], "sequence_embedding")
+        if not seq_available:
+            print("⚠️ Sequence information missing in dataset; sequence branch will be zeroed.")
+        model = MD.MultiModalEquivariantPocketGNN(
+            node_input_dim=node_input_dim,
+            edge_input_dim=edge_input_dim,
+        ).to(device)
+    else:
+        raise ValueError(f"Unsupported model_name: {model_name}")
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
     best_val_loss = float('inf')
@@ -240,6 +263,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default="kcat_dataset_enhanced1.pt", help='Path to .pt dataset')
     parser.add_argument('--save_dir', type=str, default='outputs/kcat_enhanced_model')
+    parser.add_argument(
+        '--model',
+        type=str,
+        default='MultiModalEquivariantPocketGNN',
+        choices=['PocketGNNKcatOnly', 'EquivariantPocketGNN', 'MultiModalEquivariantPocketGNN'],
+        help='Choose backbone; multimodal model fuses sequence + pocket geometry',
+    )
     args = parser.parse_args()
     from utils.metadata_utils import save_metadata
 
@@ -248,8 +278,8 @@ if __name__ == '__main__':
         save_dir=args.save_dir,
         dataset_path=args.dataset,
         graph_builder_version='enhanced_builder',
-        gnn_model_version='PocketGNNKcatOnly',
+        gnn_model_version=args.model,
         comments='Enhanced features + kcat-only prediction + angle features'
     )
 
-    train(args.dataset, args.save_dir)
+    train(args.dataset, args.save_dir, model_name=args.model)
